@@ -1,0 +1,6 @@
+# Minimal hello-world-like PX4 parameter overlay.
+# Format: PARAM_NAME VALUE
+MIS_TAKEOFF_ALT 5
+MPC_XY_CRUISE 3
+MPC_Z_VEL_MAX_UP 2
+COM_ARM_WO_GPS 1

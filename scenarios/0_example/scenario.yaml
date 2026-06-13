@@ -1,0 +1,11 @@
+vehicle: gz_x500
+world: default
+px4_params: inputs/hello.params
+mission_plan: inputs/hello.plan
+extra_images: []
+output_dir: recent_output
+
+px4_image: px4io/px4-sitl-gazebo:latest
+timeout_s: 45
+mavlink_url: udpin:0.0.0.0:14540
+ros_domain_id: 0
