@@ -1,5 +1,7 @@
 vehicle: gz_x500
-world: default
+# Use a built-in PX4/Gazebo world by name instead of world_file:
+# world_name: default
+world_file: inputs/hello.world
 px4_params: inputs/hello.params
 mission_plan: inputs/hello.plan
 extra_images: []

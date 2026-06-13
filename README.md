@@ -35,7 +35,9 @@ The example writes artifacts under `scenarios/0_example/recent_output/`.
 
 ```yaml
 vehicle: gz_x500
-world: default
+# Use a built-in PX4/Gazebo world by name instead of world_file:
+# world_name: default
+world_file: inputs/hello.world
 px4_params: inputs/hello.params
 mission_plan: inputs/hello.plan
 extra_images: []
@@ -48,6 +50,11 @@ Optional fields currently supported by the runner:
 - `timeout_s`: total run time after container start, default `90`.
 - `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`.
 - `ros_domain_id`: exported into the PX4 container, default `0`.
+
+World selection:
+
+- `world_name`: built-in PX4/Gazebo world name, for example `default`.
+- `world_file`: scenario-local `.world` or `.sdf` file. The runner mounts it into the PX4 container as a Gazebo SDF world.
 
 ## Notes
 

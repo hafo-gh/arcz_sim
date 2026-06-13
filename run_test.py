@@ -30,7 +30,7 @@ except ImportError as exc:  # pragma: no cover
 
 
 ROOT = Path(__file__).resolve().parent
-REQUIRED_FIELDS = ("vehicle", "world", "px4_params", "mission_plan", "extra_images", "output_dir")
+REQUIRED_FIELDS = ("vehicle", "px4_params", "mission_plan", "extra_images", "output_dir")
 PX4_CUSTOM_MAIN_MODE_AUTO = 4
 PX4_CUSTOM_SUB_MODE_AUTO_MISSION = 4
 
@@ -38,7 +38,8 @@ PX4_CUSTOM_SUB_MODE_AUTO_MISSION = 4
 @dataclass
 class TestConfig:
     vehicle: str
-    world: str
+    world_name: str | None
+    world_file: Path | None
     px4_params: Path
     mission_plan: Path
     extra_images: list[str]
@@ -84,11 +85,25 @@ def load_manifest(path: Path) -> TestConfig:
     missing = [field for field in REQUIRED_FIELDS if field not in data]
     if missing:
         raise SystemExit(f"Manifest missing required fields: {', '.join(missing)}")
+    if "world_name" in data and "world_file" in data:
+        raise SystemExit("Manifest must use only one of world_name or world_file.")
+    if "world_name" not in data and "world_file" not in data and "world" not in data:
+        raise SystemExit("Manifest must define either world_name or world_file.")
 
     manifest_dir = path.parent.resolve()
+    world_file = None
+    world_name = None
+    if "world_file" in data:
+        world_file = resolve_path(data["world_file"], manifest_dir)
+        if world_file.suffix.lower() not in (".world", ".sdf"):
+            raise SystemExit(f"world_file must end in .world or .sdf: {world_file}")
+    else:
+        world_name = str(data.get("world_name", data.get("world", "default")))
+
     return TestConfig(
         vehicle=str(data["vehicle"]),
-        world=str(data["world"]),
+        world_name=world_name,
+        world_file=world_file,
         px4_params=resolve_path(data["px4_params"], manifest_dir),
         mission_plan=resolve_path(data["mission_plan"], manifest_dir),
         extra_images=list(data.get("extra_images") or []),
@@ -268,6 +283,17 @@ def start_mission(master: Any, log_path: Path) -> None:
 
 def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
     container = f"arcz-sim-{uuid.uuid4().hex[:12]}"
+    world_name = config.world_name or "default"
+    world_mount: list[str] = []
+    if config.world_file:
+        world_name = config.world_file.stem
+        world_mount = [
+            "-e",
+            "PX4_GZ_WORLDS=/scenario/worlds",
+            "-v",
+            f"{config.world_file}:/scenario/worlds/{world_name}.sdf:ro",
+        ]
+
     cmd = [
         "docker",
         "run",
@@ -281,9 +307,10 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
         "-e",
         f"PX4_SIM_MODEL={config.vehicle}",
         "-e",
-        f"PX4_GZ_WORLD={config.world}",
+        f"PX4_GZ_WORLD={world_name}",
         "-e",
         f"ROS_DOMAIN_ID={config.ros_domain_id}",
+        *world_mount,
         "-v",
         f"{output_dir}:/test_output",
         config.px4_image,
@@ -377,6 +404,8 @@ def main() -> int:
     for needed in (config.px4_params, config.mission_plan):
         if not needed.exists():
             raise SystemExit(f"Input file does not exist: {needed}")
+    if config.world_file and not config.world_file.exists():
+        raise SystemExit(f"World file does not exist: {config.world_file}")
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -389,7 +418,8 @@ def main() -> int:
         "manifest": str(args.manifest.resolve()),
         "config": {
             "vehicle": config.vehicle,
-            "world": config.world,
+            "world_name": config.world_name,
+            "world_file": str(config.world_file) if config.world_file else None,
             "px4_params": str(config.px4_params),
             "mission_plan": str(config.mission_plan),
             "extra_images": config.extra_images,
