@@ -1,6 +1,6 @@
-[r[runner] docker run --detach --name arcz-sim-0d602f04b1cf --network host -e HEADLESS=1 -e PX4_SIM_MODEL=gz_x500 -e PX4_GZ_WORLD=hello -e ROS_DOMAIN_ID=0 -e PX4_GZ_WORLDS=/scenario/worlds -v /home/radek/arcz_sim/scenarios/0_example/inputs/hello.world:/scenario/worlds/hello.sdf:ro -v /home/radek/arcz_sim/scenarios/0_example/recent_output:/test_output px4io/px4-sitl-gazebo:latest
-396af6ae545cbd43a4c711cdaf5529e9ad3d45209e1982b9baa672471f934152
-[r[runner] Waiting for MAVLink heartbeat on udpin:0.0.0.0:14540
+[r[runner] docker run --detach --name arcz-sim-5c2c33b64977 --network host -e HEADLESS=1 -e PX4_SIM_MODEL=gz_x500 -e PX4_GZ_WORLD=hello -e ROS_DOMAIN_ID=0 -e PX4_GZ_WORLDS=/scenario/worlds -v /home/radek/arcz_sim/scenarios/0_example/inputs/hello.world:/scenario/worlds/hello.sdf:ro -v /home/radek/arcz_sim/scenarios/0_example/recent_output:/test_output px4io/px4-sitl-gazebo:latest
+dc5d95850cc0e1c50b83a5ac169d0d6a23f501ab751fe16e813ac500cd3fe973
+[r[runner] Waiting for MAVLink heartbeat on udpin:0.0.0.0:14030
 
 ______  __   __    ___
 | ___ \ \ \ / /   /   |
@@ -39,7 +39,7 @@ Warning [Utils.cc:132] [/sdf/model[@name="x500_base"]/link[@name="base_link"]/se
 Warning [Utils.cc:132] [/sdf/model[@name="x500_base"]/link[@name="base_link"]/sensor[@name="magnetometer_sensor"]/gz_frame_id:/opt/px4-gazebo/share/gz/models/x500_base/model.sdf:L233]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
 Warning [Utils.cc:132] [/sdf/model[@name="x500_base"]/link[@name="base_link"]/sensor[@name="imu_sensor"]/gz_frame_id:/opt/px4-gazebo/share/gz/models/x500_base/model.sdf:L259]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
 Warning [Utils.cc:132] [/sdf/model[@name="x500_base"]/link[@name="base_link"]/sensor[@name="navsat_sensor"]/gz_frame_id:/opt/px4-gazebo/share/gz/models/x500_base/model.sdf:L311]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
-INFO  [lockstep_scheduler] setting initial absolute time to 4164000 us
+INFO  [lockstep_scheduler] setting initial absolute time to 4160000 us
 INFO  [gz_bridge] world: hello, model: x500_0
 INFO  [init] Setting camera to follow x500_0
 INFO  [init] Camera follow offset set to -2.0, -2.0, 2.0
@@ -56,64 +56,60 @@ INFO  [tone_alarm] home set
 INFO  [logger] logger started (mode=all)
 INFO  [logger] Max log file size: 1024 MiB
 INFO  [logger] Start file log (type: full)
-INFO  [logger] [logger] ./log/2026-06-13/22_50_01.ulg
-INFO  [logger] Opened full log file: ./log/2026-06-13/22_50_01.ulg
+INFO  [logger] [logger] ./log/2026-06-14/08_28_49.ulg
+INFO  [logger] Opened full log file: ./log/2026-06-14/08_28_49.ulg
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [px4] Startup script returned successfully
 
 
- [r[runner] MAVLink heartbeat: system=1 component=0
+ INFO  [mavlink] partner IP: 127.0.0.1
+
+
+[r[runner] MAVLink heartbeat: system=1 component=0
+[runner] param MIS_TAKEOFF_ALT=5: ack
+[2K
+px[r[runner] param MPC_XY_CRUISE=3: ack
+h>
+
+px[r[runner] param MPC_Z_VEL_MAX_UP=2: ack
+h> [r[runner] param COM_ARM_WO_GPS=1: ack
 
 
 INFO  [mavlink] partner IP: 127.0.0.1
 
-[runner] param MIS_TAKEOFF_ALT=5: ack
-[2K
 
+ERROR [mavlink] param types mismatch param: COM_ARM_WO_GPS
 
-[r[runner] param MPC_XY_CRUISE=3: ack
-K
-[r[runner] param MPC_Z_VEL_MAX_UP=2: ack
-[r[runner] param COM_ARM_WO_GPS=1: ack
-
- ERROR [mavlink] param types mismatch param: COM_ARM_WO_GPS
 
 WARN  [mc_pos_control] Ascent speed has been constrained by max speed
 
 
-WARN  [navigator] Mission rejected: empty
+ WARN  [navigator] Mission rejected: empty
 
 
-[r[runner] mission item 0 sent
-2K
+ [r[runner] mission item 0 sent
 
-
- [r[runner] mission item 1 sent
-
-
+[r[runner] mission item 1 sent
 [r[runner] mission item 2 sent
-2K
-
 [r[runner] mission upload accepted
 xh>
+ INFO  [tone_alarm] notify positive
 
 
-INFO  [tone_alarm] notify positive
+INFO  [commander] Ready for takeoff!
 
 
- INFO  [commander] Ready for takeoff!
-
-
- [r[runner] requested AUTO.MISSION mode, arm, and mission start
+[runner] requested AUTO.MISSION mode, arm, and mission start
 [r[runner] letting scenario run for 45s
+[2K
 
 
- INFO  [commander] Armed by external command
+INFO  [commander] Armed by external command
 
- INFO  [tone_alarm] arming warning
+INFO  [navigator] Executing Mission
+INFO  [tone_alarm] arming warning
 
- INFO  [navigator] Executing Mission
 
 INFO  [navigator] Climb to 5.0 meters above home
 
@@ -124,40 +120,44 @@ INFO  [commander] Takeoff detected
 ERROR [sensors] Accel #0 fail:  TIMEOUT!
 
 
- WARN  [health_and_arming_checks] Preflight Fail: High Accelerometer Bias
-
-
-WARN  [failsafe] Failsafe activated: entering Hold for 5 seconds
-
- INFO  [tone_alarm] battery warning (fast)
-
-
- WARN  [failsafe] Failsafe activated
-INFO  [navigator] RTL: start return at 7 m (7 m above destination)
-
-
- INFO  [navigator] RTL: land at destination
+ NodeShared::Publish() Error: Interrupted system call
+[2K
 
 
 ERROR [sensors] Accel #0 fail:  TIMEOUT!
 
 
-INFO  [commander] Landing detected
+ ERROR [sensors] Accel #0 fail:  TIMEOUT!
+
+
+ INFO  [commander] Landing detected
+
+
+ INFO  [navigator] Mission finished, landed
 
 
 INFO  [commander] Disarmed by landing
 INFO  [tone_alarm] notify neutral
 
-
- INFO  [vehicle_imu] ACC 0 (1310988) offset committed: [0.000 0.000 0.000]->[0.066 -0.043 -0.256])
-
-
- INFO  [logger] closed logfile, bytes written: 9967465
+INFO  [vehicle_imu] GYRO 0 (1310988) offset committed: [0.000 0.000 0.000]->[0.001 -0.000 0.015])
 
 
-pxh
-[r[runner] copied /root/.local/share/px4/rootfs/log/2026-06-13/22_50_01.ulg to px4.ulg
->
+ERROR [sensors] Accel #0 fail:  TIMEOUT!
+
+
+INFO  [logger] closed logfile, bytes written: 7496184
+
+
+ERROR [sensors] Accel #0 fail:  TIMEOUT!
+
+
+WARN  [health_and_arming_checks] Preflight Fail: High Accelerometer Bias
+
+
+ WARN  [health_and_arming_checks] Preflight Fail: High Accelerometer Bias
+
+
+[r[runner] copied /root/.local/share/px4/rootfs/log/2026-06-14/08_28_49.ulg to px4.ulg
 
 
 PX4 Exiting...

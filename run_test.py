@@ -48,6 +48,25 @@ class TestConfig:
     timeout_s: int = 90
     mavlink_url: str = "udpin:0.0.0.0:14540"
     ros_domain_id: int = 0
+    serial_bridge: "SerialBridgeConfig | None" = None
+
+
+@dataclass
+class SerialBridgeConfig:
+    device: Path
+    baudrate: int
+    px4_host: str
+    px4_port: int
+    bind_host: str
+    bind_port: int
+
+
+@dataclass
+class SerialBridge:
+    config: SerialBridgeConfig
+    process: subprocess.Popen[str] | None
+    stop_event: threading.Event
+    thread: threading.Thread
 
 
 @dataclass
@@ -100,6 +119,8 @@ def load_manifest(path: Path) -> TestConfig:
     else:
         world_name = str(data.get("world_name", data.get("world", "default")))
 
+    serial_bridge = load_serial_bridge(data.get("serial_bridge"), manifest_dir)
+
     return TestConfig(
         vehicle=str(data["vehicle"]),
         world_name=world_name,
@@ -112,6 +133,24 @@ def load_manifest(path: Path) -> TestConfig:
         timeout_s=int(data.get("timeout_s", 90)),
         mavlink_url=str(data.get("mavlink_url", "udpin:0.0.0.0:14540")),
         ros_domain_id=int(data.get("ros_domain_id", 0)),
+        serial_bridge=serial_bridge,
+    )
+
+
+def load_serial_bridge(data: Any, manifest_dir: Path) -> SerialBridgeConfig | None:
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise SystemExit("serial_bridge must be a mapping.")
+    if not bool(data.get("enabled", False)):
+        return None
+    return SerialBridgeConfig(
+        device=resolve_output_path(str(data.get("device", "/dev/ttySIM0")), manifest_dir),
+        baudrate=int(data.get("baudrate", 921600)),
+        px4_host=str(data.get("px4_host", "127.0.0.1")),
+        px4_port=int(data.get("px4_port", 18570)),
+        bind_host=str(data.get("bind_host", "127.0.0.1")),
+        bind_port=int(data.get("bind_port", 14550)),
     )
 
 
@@ -323,6 +362,111 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
     return container
 
 
+def ensure_serial_bridge_can_start(config: SerialBridgeConfig) -> None:
+    if shutil.which("socat") is None:
+        raise RuntimeError("serial_bridge requires socat to be installed on the host.")
+    if config.device.exists() or config.device.is_symlink():
+        if config.device.is_symlink():
+            config.device.unlink()
+        else:
+            raise RuntimeError(f"serial_bridge device already exists and is not a symlink: {config.device}")
+    parent = config.device.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if not os.access(parent, os.W_OK):
+        raise RuntimeError(
+            f"Cannot create {config.device}. Run the test as a user that can write to {parent}, "
+            "or choose a writable serial_bridge.device path."
+        )
+
+
+def start_serial_bridge(config: SerialBridgeConfig, log_path: Path) -> SerialBridge:
+    ensure_serial_bridge_can_start(config)
+    stop_event = threading.Event()
+    ready_event = threading.Event()
+    bridge = SerialBridge(config=config, process=None, stop_event=stop_event, thread=threading.Thread())
+
+    def command() -> list[str]:
+        pty_options = [
+            f"link={config.device}",
+            "raw",
+            "echo=0",
+            f"b{config.baudrate}",
+            "mode=660",
+            "waitslave",
+            "ignoreeof",
+        ]
+        udp_options = [
+            f"bind={config.bind_host}:{config.bind_port}",
+            "reuseaddr",
+        ]
+        return [
+            "socat",
+            "-d",
+            "-d",
+            "PTY," + ",".join(pty_options),
+            f"UDP4:{config.px4_host}:{config.px4_port}," + ",".join(udp_options),
+        ]
+
+    def supervise() -> None:
+        announced = False
+        while not stop_event.is_set():
+            if config.device.is_symlink():
+                config.device.unlink()
+            cmd = command()
+            append_log(log_path, "[runner] " + " ".join(cmd))
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            bridge.process = process
+            while process.poll() is None and not stop_event.is_set():
+                if config.device.exists() and not ready_event.is_set():
+                    message = (
+                        f"Gazebo PX4 MAVLink serial bridge is available at "
+                        f"{config.device}:{config.baudrate}"
+                    )
+                    print(message, flush=True)
+                    append_log(log_path, f"[runner] {message}")
+                    ready_event.set()
+                    announced = True
+                time.sleep(0.1)
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            output = process.stdout.read() if process.stdout else ""
+            if output.strip():
+                append_log(log_path, "[serial_bridge] " + output.strip())
+            if not stop_event.is_set():
+                append_log(log_path, f"[runner] serial bridge exited with code {process.returncode}; restarting")
+                if announced:
+                    ready_event.clear()
+                time.sleep(0.5)
+
+    thread = threading.Thread(target=supervise, name="serial-bridge", daemon=True)
+    bridge.thread = thread
+    thread.start()
+    if not ready_event.wait(timeout=10):
+        stop_serial_bridge(bridge, log_path)
+        raise RuntimeError(f"serial_bridge did not create {config.device} before timeout")
+    return bridge
+
+
+def stop_serial_bridge(bridge: SerialBridge | None, log_path: Path) -> None:
+    if bridge is None:
+        return
+    bridge.stop_event.set()
+    if bridge.process and bridge.process.poll() is None:
+        bridge.process.terminate()
+        try:
+            bridge.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            bridge.process.kill()
+    bridge.thread.join(timeout=5)
+    if bridge.config.device.is_symlink():
+        bridge.config.device.unlink()
+        append_log(log_path, f"[runner] removed serial bridge device {bridge.config.device}")
+
+
 ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 PXH_PROMPT_RE = re.compile(rb"(?:\r?\x1b\[2K)?\r?pxh> ?")
 
@@ -428,6 +572,14 @@ def main() -> int:
             "timeout_s": config.timeout_s,
             "mavlink_url": config.mavlink_url,
             "ros_domain_id": config.ros_domain_id,
+            "serial_bridge": {
+                "device": str(config.serial_bridge.device),
+                "baudrate": config.serial_bridge.baudrate,
+                "px4_endpoint": f"{config.serial_bridge.px4_host}:{config.serial_bridge.px4_port}",
+                "bind_endpoint": f"{config.serial_bridge.bind_host}:{config.serial_bridge.bind_port}",
+            }
+            if config.serial_bridge
+            else None,
         },
         "status": "running",
         "artifacts": {"run_log": "run.log", "px4_ulg": None},
@@ -439,6 +591,7 @@ def main() -> int:
 
     container = ""
     log_follower: LogFollower | None = None
+    serial_bridge: SerialBridge | None = None
     exit_code = 0
     try:
         container = docker_start(config, output_dir, log_path)
@@ -448,6 +601,8 @@ def main() -> int:
 
         master = connect_mavlink(config.mavlink_url, log_path)
         if master is not None:
+            if config.serial_bridge:
+                serial_bridge = start_serial_bridge(config.serial_bridge, log_path)
             upload_params(master, parse_params(config.px4_params), log_path)
             if upload_mission(master, qgc_plan_items(config.mission_plan), log_path):
                 start_mission(master, log_path)
@@ -483,6 +638,7 @@ def main() -> int:
                 log_follower.process.kill()
         if log_follower:
             log_follower.thread.join(timeout=5)
+        stop_serial_bridge(serial_bridge, log_path)
         clean_log_file(log_path)
         write_metadata(output_dir / "metadata.json", metadata)
 

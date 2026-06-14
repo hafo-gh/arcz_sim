@@ -31,6 +31,30 @@ python3 run_test.py scenarios/0_example/scenario.yaml
 
 The example writes artifacts under `scenarios/0_example/recent_output/`.
 
+## Run With Point-To-Home
+
+For companion-container testing, use PX4 SITL MAVLink over UDP. Start the companion first, then start the simulation:
+
+```bash
+cd /home/radek/pth
+docker compose up -d arcz_point_to_home
+
+cd /home/radek/arcz_sim
+python3 run_test.py scenarios/0_example/scenario.yaml
+```
+
+The point-to-home container is configured to listen on:
+
+```text
+udpin:0.0.0.0:14540
+```
+
+The sim runner uses a separate PX4 MAVLink endpoint for its own parameter and mission upload:
+
+```text
+udpin:0.0.0.0:14030
+```
+
 ## Manifest fields
 
 ```yaml
@@ -42,13 +66,18 @@ px4_params: inputs/hello.params
 mission_plan: inputs/hello.plan
 extra_images: []
 output_dir: recent_output
+
+px4_image: px4io/px4-sitl-gazebo:latest
+timeout_s: 45
+mavlink_url: udpin:0.0.0.0:14030
+ros_domain_id: 0
 ```
 
 Optional fields currently supported by the runner:
 
 - `px4_image`: Docker image, default `px4io/px4-sitl-gazebo:latest`.
 - `timeout_s`: total run time after container start, default `90`.
-- `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`.
+- `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`. Use `14030` when a companion container is listening on PX4's `14540` onboard stream.
 - `ros_domain_id`: exported into the PX4 container, default `0`.
 
 World selection:
@@ -59,3 +88,5 @@ World selection:
 ## Notes
 
 The runner uses Docker host networking. This keeps UDP ports explicit and practical for PX4 SITL, QGroundControl, MAVSDK, and future ROS 2 containers on a Linux test host.
+
+The old pseudo-serial bridge is intentionally not used by the example. Direct UDP is simpler and matches PX4 SITL's native networking model.

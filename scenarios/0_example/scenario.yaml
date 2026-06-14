@@ -9,5 +9,10 @@ output_dir: recent_output
 
 px4_image: px4io/px4-sitl-gazebo:latest
 timeout_s: 45
-mavlink_url: udpin:0.0.0.0:14540
+mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
+
+serial_bridge:
+  enabled: false
+  device: /tmp/arcz_sim/ttySIM0
+  baudrate: 921600
