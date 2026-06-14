@@ -5,7 +5,7 @@ mission_plan: inputs/MB1_extended_pattern.plan
 extra_images: []
 output_dir: recent_output
 px4_image: px4io/px4-sitl-gazebo:latest
-timeout_s: 600
+timeout_s: 1000
 mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
-gpu: nvidia
+gpu: auto
