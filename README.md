@@ -106,6 +106,7 @@ px4_image: px4io/px4-sitl-gazebo:latest
 timeout_s: 45
 mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
+gpu: none
 ```
 
 Optional fields currently supported by the runner:
@@ -115,6 +116,7 @@ Optional fields currently supported by the runner:
 - `timeout_s: null`: run until `q` is pressed.
 - `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`. Use `14030` when a companion container is listening on PX4's `14540` onboard stream.
 - `ros_domain_id`: exported into the PX4 container, default `0`.
+- `gpu`: GPU passthrough mode, default `none`. Use `nvidia` to require NVIDIA Docker GPU support, or `auto` to use it when available and continue without it otherwise.
 - `mission_plan: null`: do not upload or start a mission.
 
 World selection:
@@ -124,15 +126,23 @@ World selection:
 
 ## Reducing CPU Load
 
-To reduce the CPU load, you can play with followeing params in the world definitions...
+To reduce CPU load, adjust the physics settings in the world definition:
 
 ```xml
 <max_step_size>0.004</max_step_size>
 <real_time_factor>0.5</real_time_factor>
-<real_time_update_rate>125</real_time_update_rate>
+<real_time_update_rate>250</real_time_update_rate>
 ```
 
-This targets about half real time instead of full real time. Missions and QGC interaction still work, but simulated time advances more slowly and Gazebo asks less from the host. To go lighter, reduce `real_time_factor` and `real_time_update_rate` together, for example `0.25` and `62.5`. To restore PX4's usual default, use `1.0` and `250`.
+This targets about half real time instead of full real time. Missions and QGC interaction still work, but simulated time advances more slowly and Gazebo asks less from the host. For PX4's `gz_x500`, keep `real_time_update_rate` at `250` when possible because the simulated IMU is configured for 250 Hz. To go lighter, reduce `real_time_factor`, for example to `0.25`, and disable shadows.
+
+On NVIDIA hosts with the NVIDIA container runtime installed, scenarios can request GPU access:
+
+```yaml
+gpu: nvidia
+```
+
+The runner then starts Docker with NVIDIA GPU access and graphics/display driver capabilities. This can help Gazebo rendering and camera/depth workloads, especially in `show_simulation` mode, but Gazebo physics is still mostly CPU-bound. Use `nvidia-smi` while the scenario is running to confirm whether Gazebo is actually using the GPU.
 
 ## Notes
 

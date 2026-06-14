@@ -17,6 +17,7 @@ import threading
 import time
 import tty
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ class TestConfig:
     timeout_s: int | None = 90
     mavlink_url: str = "udpin:0.0.0.0:14540"
     ros_domain_id: int = 0
+    gpu: str = "none"
     serial_bridge: "SerialBridgeConfig | None" = None
 
 
@@ -93,6 +95,21 @@ def resolve_output_path(value: str | Path, manifest_dir: Path) -> Path:
     if path.is_absolute():
         return path
     return (manifest_dir / path).resolve()
+
+
+def sdf_world_name(path: Path) -> str:
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        raise SystemExit(f"Could not parse world_file as XML/SDF: {path}: {exc}") from exc
+
+    world = root.find("world")
+    if world is None:
+        raise SystemExit(f"world_file does not contain a top-level <world> element: {path}")
+    name = world.get("name")
+    if not name:
+        raise SystemExit(f"world_file <world> element is missing a name attribute: {path}")
+    return name
 
 
 def load_manifest(path: Path) -> TestConfig:
@@ -139,8 +156,16 @@ def load_manifest(path: Path) -> TestConfig:
         timeout_s=parse_timeout(data["timeout_s"]) if "timeout_s" in data else 90,
         mavlink_url=str(data.get("mavlink_url", "udpin:0.0.0.0:14540")),
         ros_domain_id=int(data.get("ros_domain_id", 0)),
+        gpu=parse_gpu_mode(data.get("gpu", "none")),
         serial_bridge=serial_bridge,
     )
+
+
+def parse_gpu_mode(value: Any) -> str:
+    mode = str(value).strip().lower()
+    if mode not in ("none", "auto", "nvidia"):
+        raise SystemExit("gpu must be one of: none, auto, nvidia")
+    return mode
 
 
 def parse_timeout(value: Any) -> int | None:
@@ -226,11 +251,23 @@ def qgc_plan_items(path: Path) -> list[Any]:
     return mission_items
 
 
-def connect_mavlink(url: str, log_path: Path, deadline_s: int = 45) -> Any | None:
+def docker_is_running(container: str) -> bool:
+    result = run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", container],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0 and (result.stdout or "").strip() == "true"
+
+
+def connect_mavlink(url: str, log_path: Path, container: str | None = None, deadline_s: int = 45) -> Any | None:
     append_log(log_path, f"[runner] Waiting for MAVLink heartbeat on {url}")
     master = mavutil.mavlink_connection(url, autoreconnect=True)
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
+        if container and not docker_is_running(container):
+            append_log(log_path, "[runner] PX4 container exited before MAVLink heartbeat")
+            return None
         heartbeat = master.wait_heartbeat(timeout=2)
         if heartbeat:
             append_log(
@@ -357,12 +394,42 @@ def docker_gui_args() -> list[str]:
     return args
 
 
+def docker_gpu_args(mode: str, log_path: Path) -> list[str]:
+    if mode == "none":
+        return []
+
+    has_nvidia_smi = shutil.which("nvidia-smi") is not None
+    info = run(["docker", "info", "--format", "{{json .Runtimes}}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    has_nvidia_runtime = info.returncode == 0 and '"nvidia"' in (info.stdout or "")
+
+    if not has_nvidia_smi or not has_nvidia_runtime:
+        message = "NVIDIA GPU requested but nvidia-smi or Docker nvidia runtime is not available"
+        if mode == "nvidia":
+            raise RuntimeError(message)
+        append_log(log_path, f"[runner] {message}; continuing without GPU")
+        return []
+
+    append_log(log_path, "[runner] enabling NVIDIA GPU access for Gazebo container")
+    return [
+        "--gpus",
+        "all",
+        "--runtime",
+        "nvidia",
+        "-e",
+        "NVIDIA_VISIBLE_DEVICES=all",
+        "-e",
+        "NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display",
+        "-e",
+        "__GLX_VENDOR_LIBRARY_NAME=nvidia",
+    ]
+
+
 def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simulation: bool) -> str:
     container = f"arcz-sim-{uuid.uuid4().hex[:12]}"
     world_name = config.world_name or "default"
     world_mount: list[str] = []
     if config.world_file:
-        world_name = config.world_file.stem
+        world_name = sdf_world_name(config.world_file)
         world_mount = [
             "-e",
             "PX4_GZ_WORLDS=/scenario/worlds",
@@ -371,6 +438,7 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simu
         ]
 
     display_args = docker_gui_args() if show_simulation else ["-e", "HEADLESS=1"]
+    gpu_args = docker_gpu_args(config.gpu, log_path)
     cmd = [
         "docker",
         "run",
@@ -379,6 +447,7 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simu
         container,
         "--network",
         "host",
+        *gpu_args,
         *display_args,
         "-e",
         f"PX4_SIM_MODEL={config.vehicle}",
@@ -654,6 +723,7 @@ def main() -> int:
             "timeout_s": config.timeout_s,
             "mavlink_url": config.mavlink_url,
             "ros_domain_id": config.ros_domain_id,
+            "gpu": config.gpu,
             "show_simulation": show_simulation,
             "serial_bridge": {
                 "device": str(config.serial_bridge.device),
@@ -687,7 +757,9 @@ def main() -> int:
         write_metadata(output_dir / "metadata.json", metadata)
         log_follower = docker_logs(container, log_path)
 
-        master = connect_mavlink(config.mavlink_url, log_path)
+        master = connect_mavlink(config.mavlink_url, log_path, container=container)
+        if master is None and container and not docker_is_running(container):
+            raise RuntimeError("PX4 container exited before MAVLink heartbeat")
         if master is not None:
             if config.serial_bridge:
                 serial_bridge = start_serial_bridge(config.serial_bridge, log_path)
