@@ -10,6 +10,7 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import termios
@@ -66,6 +67,7 @@ class TestConfig:
     qgc_host: str | None = None
     qgc_port: int = 14550
     qgc_mode: str = "unicast"
+    qgc_proxy_px4_port: int = 14551
     gpu: str = "none"
     serial_bridge: "SerialBridgeConfig | None" = None
 
@@ -98,6 +100,14 @@ class LogFollower:
 class GCSHeartbeat:
     stop_event: threading.Event
     thread: threading.Thread
+
+
+@dataclass
+class QGCProxy:
+    stop_event: threading.Event
+    thread: threading.Thread
+    public_socket: socket.socket
+    px4_socket: socket.socket
 
 
 def resolve_path(value: str | Path, manifest_dir: Path) -> Path:
@@ -180,6 +190,7 @@ def load_manifest(path: Path) -> TestConfig:
         qgc_host=str(data["qgc_host"]) if data.get("qgc_host") else None,
         qgc_port=int(data.get("qgc_port", 14550)),
         qgc_mode=parse_qgc_mode(data.get("qgc_mode", "unicast")),
+        qgc_proxy_px4_port=int(data.get("qgc_proxy_px4_port", 14551)),
         gpu=parse_gpu_mode(data.get("gpu", "none")),
         serial_bridge=serial_bridge,
     )
@@ -187,8 +198,8 @@ def load_manifest(path: Path) -> TestConfig:
 
 def parse_qgc_mode(value: Any) -> str:
     mode = str(value).strip().lower()
-    if mode not in ("unicast", "multicast"):
-        raise SystemExit("qgc_mode must be one of: unicast, multicast")
+    if mode not in ("unicast", "multicast", "proxy"):
+        raise SystemExit("qgc_mode must be one of: unicast, multicast, proxy")
     return mode
 
 
@@ -634,9 +645,19 @@ def docker_gpu_args(mode: str, log_path: Path) -> list[str]:
     ]
 
 
+def px4_qgc_target(config: TestConfig) -> tuple[str, int] | None:
+    if config.qgc_mode == "proxy":
+        return "127.0.0.1", config.qgc_proxy_px4_port
+    if config.qgc_host:
+        return config.qgc_host, config.qgc_port
+    return None
+
+
 def px4_mavlink_override_args(config: TestConfig, output_dir: Path, log_path: Path) -> list[str]:
-    if not config.qgc_host:
+    target = px4_qgc_target(config)
+    if target is None:
         return []
+    target_host, target_port = target
 
     script_path = output_dir / "px4-rc.mavlink"
     script = f"""#!/bin/sh
@@ -662,7 +683,7 @@ gcs_interface_arg=""
 if [ "{config.qgc_mode}" = "multicast" ]; then
     gcs_interface_arg="$mavlink_network_interface_arg -p"
 fi
-mavlink start -x -u $udp_gcs_port_local -r 4000000 -f -t {config.qgc_host} -o {config.qgc_port} $gcs_interface_arg
+mavlink start -x -u $udp_gcs_port_local -r 4000000 -f -t {target_host} -o {target_port} $gcs_interface_arg
 mavlink stream -r 50 -s POSITION_TARGET_LOCAL_NED -u $udp_gcs_port_local
 mavlink stream -r 50 -s LOCAL_POSITION_NED -u $udp_gcs_port_local
 mavlink stream -r 50 -s GLOBAL_POSITION_INT -u $udp_gcs_port_local
@@ -684,7 +705,7 @@ mavlink start -x -u $udp_onboard_gimbal_port_local -r 400000 -f -m gimbal -o $ud
 """
     script_path.write_text(script, encoding="utf-8")
     script_path.chmod(0o755)
-    append_log(log_path, f"[runner] QGC MAVLink {config.qgc_mode} target: {config.qgc_host}:{config.qgc_port}")
+    append_log(log_path, f"[runner] PX4 QGC MAVLink {config.qgc_mode} target: {target_host}:{target_port}")
     return ["-v", f"{script_path}:/opt/px4-gazebo/etc/init.d-posix/px4-rc.mavlink:ro"]
 
 
@@ -917,6 +938,76 @@ def write_metadata(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def start_qgc_proxy(config: TestConfig, log_path: Path) -> QGCProxy | None:
+    if config.qgc_mode != "proxy":
+        return None
+
+    public_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    px4_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        public_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        px4_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        public_socket.bind(("0.0.0.0", config.qgc_port))
+        px4_socket.bind(("127.0.0.1", config.qgc_proxy_px4_port))
+        public_socket.setblocking(False)
+        px4_socket.setblocking(False)
+    except OSError:
+        public_socket.close()
+        px4_socket.close()
+        raise
+
+    stop_event = threading.Event()
+    clients: dict[tuple[str, int], float] = {}
+    client_ttl_s = 120.0
+    px4_addr = ("127.0.0.1", 18570)
+
+    def loop() -> None:
+        append_log(
+            log_path,
+            f"[runner] QGC proxy listening on 0.0.0.0:{config.qgc_port}; "
+            f"PX4 side 127.0.0.1:{config.qgc_proxy_px4_port} -> 127.0.0.1:18570",
+        )
+        while not stop_event.is_set():
+            try:
+                readable, _, _ = select.select([public_socket, px4_socket], [], [], 0.25)
+            except (OSError, ValueError):
+                break
+            now = time.monotonic()
+            for sock in readable:
+                try:
+                    data, addr = sock.recvfrom(65535)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    return
+                if sock is public_socket:
+                    if addr not in clients:
+                        append_log(log_path, f"[runner] QGC proxy learned client {addr[0]}:{addr[1]}")
+                    clients[addr] = now
+                    px4_socket.sendto(data, px4_addr)
+                    continue
+
+                expired = [client for client, seen_at in clients.items() if now - seen_at > client_ttl_s]
+                for client in expired:
+                    clients.pop(client, None)
+                for client in list(clients):
+                    public_socket.sendto(data, client)
+
+    thread = threading.Thread(target=loop, name="qgc-proxy", daemon=True)
+    thread.start()
+    return QGCProxy(stop_event=stop_event, thread=thread, public_socket=public_socket, px4_socket=px4_socket)
+
+
+def stop_qgc_proxy(proxy: QGCProxy | None, log_path: Path) -> None:
+    if proxy is None:
+        return
+    proxy.stop_event.set()
+    proxy.public_socket.close()
+    proxy.px4_socket.close()
+    proxy.thread.join(timeout=2)
+    append_log(log_path, "[runner] QGC proxy stopped")
+
+
 def wait_for_run_stop(timeout_s: int | None, log_path: Path) -> str:
     if timeout_s is None:
         message = "Scenario is running without a timeout. Press q to stop and collect artifacts."
@@ -1000,6 +1091,7 @@ def main() -> int:
             "qgc_host": config.qgc_host,
             "qgc_port": config.qgc_port,
             "qgc_mode": config.qgc_mode,
+            "qgc_proxy_px4_port": config.qgc_proxy_px4_port,
             "gpu": config.gpu,
             "show_simulation": show_simulation,
             "serial_bridge": {
@@ -1026,10 +1118,12 @@ def main() -> int:
     log_follower: LogFollower | None = None
     serial_bridge: SerialBridge | None = None
     gcs_heartbeat: GCSHeartbeat | None = None
+    qgc_proxy: QGCProxy | None = None
     exit_code = 0
     try:
         if show_simulation:
             append_log(log_path, "[runner] starting Gazebo with GUI because show_simulation was requested")
+        qgc_proxy = start_qgc_proxy(config, log_path)
         container = docker_start(config, output_dir, log_path, show_simulation)
         metadata["container"] = container
         write_metadata(output_dir / "metadata.json", metadata)
@@ -1082,6 +1176,7 @@ def main() -> int:
         if log_follower:
             log_follower.thread.join(timeout=5)
         stop_serial_bridge(serial_bridge, log_path)
+        stop_qgc_proxy(qgc_proxy, log_path)
         clean_log_file(log_path)
         write_metadata(output_dir / "metadata.json", metadata)
 

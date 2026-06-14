@@ -108,9 +108,9 @@ mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
 gpu: none
 px4_net_interface: eno1
-qgc_host: 10.99.99.70
 qgc_port: 14550
-qgc_mode: unicast
+qgc_mode: proxy
+qgc_proxy_px4_port: 14551
 ```
 
 Optional fields currently supported by the runner:
@@ -120,10 +120,11 @@ Optional fields currently supported by the runner:
 - `timeout_s: null`: run until `q` is pressed.
 - `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`. Use `14030` when a companion container is listening on PX4's `14540` onboard stream.
 - `ros_domain_id`: exported into the PX4 container, default `0`.
-- `px4_net_interface`: optional host network interface name for PX4 MAVLink. With `qgc_host` set, PX4 binds through this interface for unicast. Without `qgc_host`, PX4 uses interface broadcast, which usually will not cross routed VPNs.
-- `qgc_host`: optional QGroundControl computer IP for explicit MAVLink unicast, for example `10.99.99.70`. Prefer this for WireGuard or any routed network.
-- `qgc_port`: QGroundControl UDP listen port when `qgc_host` is set, default `14550`.
-- `qgc_mode`: `unicast` or `multicast`, default `unicast`. For multicast, set `qgc_host` to a multicast group such as `239.255.145.50`; the network/VPN must route that group and QGC must join it.
+- `px4_net_interface`: optional host network interface name for PX4 MAVLink. Without explicit QGC proxy/unicast settings, PX4 uses interface broadcast, which usually will not cross routed VPNs.
+- `qgc_mode`: `proxy`, `unicast`, or `multicast`, default `unicast`. Use `proxy` when QGroundControl may run on different computers.
+- `qgc_port`: UDP port exposed by the runner for QGroundControl in proxy mode, or QGroundControl UDP listen port in unicast/multicast mode, default `14550`.
+- `qgc_proxy_px4_port`: localhost UDP port used between PX4 and the runner proxy, default `14551`.
+- `qgc_host`: QGroundControl computer IP for `qgc_mode: unicast`, or multicast group for `qgc_mode: multicast`. Do not set this for `qgc_mode: proxy`.
 - `gpu`: GPU passthrough mode, default `none`. Use `nvidia` to require NVIDIA Docker GPU support, or `auto` to use it when available and continue without it otherwise.
 - `mission_plan: null`: do not upload or start a mission.
 
@@ -154,18 +155,18 @@ The runner then starts Docker with NVIDIA GPU access and graphics/display driver
 
 ## Remote QGroundControl
 
-For QGroundControl on another computer, set `px4_net_interface` to the server LAN interface that reaches the QGC machine, for example:
+For QGroundControl on another computer, use proxy mode. The runner exposes one UDP port on the simulation server and learns QGC clients from incoming packets:
 
 ```yaml
 px4_net_interface: eno1
-qgc_host: 10.99.99.70
 qgc_port: 14550
-qgc_mode: unicast
+qgc_mode: proxy
+qgc_proxy_px4_port: 14551
 ```
 
-On the QGroundControl computer, create a UDP link listening on port `14550`. PX4 binds its local GCS MAVLink socket on `18570` and sends to remote UDP `14550`; QGC should listen on `14550`, not `18570`.
+On each QGroundControl computer, create a UDP link with local/listen port `14550` and server address `192.168.99.10:14550` or another reachable MrBlack address. PX4 still binds its local GCS MAVLink socket on `18570`, but QGC should not connect to `18570`; the runner proxy bridges QGC `14550` to PX4 `18570`.
 
-For an experimental multicast test, use `scenarios/0_example/scenario_multicast.yaml`. It sends to group `239.255.145.50:14550`. On this host, Linux routes that group out `eno1`, so it will not cross a normal routed WireGuard tunnel unless the VPN/router is configured for multicast forwarding or proxying.
+Direct `unicast` mode is still available when you want PX4 to send straight to one known QGC host. Experimental `multicast` mode is available through `scenarios/0_example/scenario_multicast.yaml`, but normal routed WireGuard will not carry it unless the VPN/router is configured for multicast forwarding or proxying.
 
 ## Notes
 
