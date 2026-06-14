@@ -1,0 +1,17 @@
+vehicle: gz_x500
+# Use a built-in PX4/Gazebo world by name instead of world_file:
+# world_name: default
+world_file: inputs/hello.world
+px4_params: inputs/hello.params
+mission_plan: inputs/hello.plan
+extra_images: []
+output_dir: recent_output
+
+px4_image: px4io/px4-sitl-gazebo:latest
+timeout_s: 45
+mavlink_url: udpin:0.0.0.0:14030
+ros_domain_id: 0
+px4_net_interface: eno1
+qgc_host: 239.255.145.50
+qgc_port: 14550
+qgc_mode: multicast
