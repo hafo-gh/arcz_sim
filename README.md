@@ -107,6 +107,9 @@ timeout_s: 45
 mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
 gpu: none
+px4_net_interface: eno1
+qgc_host: 10.99.99.70
+qgc_port: 14550
 ```
 
 Optional fields currently supported by the runner:
@@ -116,6 +119,9 @@ Optional fields currently supported by the runner:
 - `timeout_s: null`: run until `q` is pressed.
 - `mavlink_url`: MAVLink endpoint used by the runner, default `udpin:0.0.0.0:14540`. Use `14030` when a companion container is listening on PX4's `14540` onboard stream.
 - `ros_domain_id`: exported into the PX4 container, default `0`.
+- `px4_net_interface`: optional host network interface name for PX4 MAVLink. With `qgc_host` set, PX4 binds through this interface for unicast. Without `qgc_host`, PX4 uses interface broadcast, which usually will not cross routed VPNs.
+- `qgc_host`: optional QGroundControl computer IP for explicit MAVLink unicast, for example `10.99.99.70`. Prefer this for WireGuard or any routed network.
+- `qgc_port`: QGroundControl UDP listen port when `qgc_host` is set, default `14550`.
 - `gpu`: GPU passthrough mode, default `none`. Use `nvidia` to require NVIDIA Docker GPU support, or `auto` to use it when available and continue without it otherwise.
 - `mission_plan: null`: do not upload or start a mission.
 
@@ -143,6 +149,18 @@ gpu: nvidia
 ```
 
 The runner then starts Docker with NVIDIA GPU access and graphics/display driver capabilities. This can help Gazebo rendering and camera/depth workloads, especially in `show_simulation` mode, but Gazebo physics is still mostly CPU-bound. Use `nvidia-smi` while the scenario is running to confirm whether Gazebo is actually using the GPU.
+
+## Remote QGroundControl
+
+For QGroundControl on another computer, set `px4_net_interface` to the server LAN interface that reaches the QGC machine, for example:
+
+```yaml
+px4_net_interface: eno1
+qgc_host: 10.99.99.70
+qgc_port: 14550
+```
+
+On the QGroundControl computer, create a UDP link listening on port `14550`. PX4 binds its local GCS MAVLink socket on `18570` and sends to remote UDP `14550`; QGC should listen on `14550`, not `18570`.
 
 ## Notes
 

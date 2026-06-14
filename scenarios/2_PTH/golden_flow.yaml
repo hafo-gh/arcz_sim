@@ -9,3 +9,6 @@ timeout_s: 1000
 mavlink_url: udpin:0.0.0.0:14030
 ros_domain_id: 0
 gpu: auto
+px4_net_interface: eno1
+qgc_host: 10.99.99.70
+qgc_port: 14550
