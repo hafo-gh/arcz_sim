@@ -49,7 +49,6 @@ REQUIRED_PREFLIGHT_SENSORS = (
     ("gps", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS),
 )
 
-
 @dataclass
 class TestConfig:
     vehicle: str
@@ -572,6 +571,7 @@ def start_mission(master: Any, log_path: Path, send_lock: threading.Lock | None 
         ),
     )
     append_log(log_path, "[runner] requested AUTO.MISSION mode, arm, and mission start")
+
     return True
 
 
