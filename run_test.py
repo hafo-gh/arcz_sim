@@ -37,6 +37,17 @@ ROOT = Path(__file__).resolve().parent
 REQUIRED_FIELDS = ("vehicle", "px4_params", "mission_plan", "extra_images", "output_dir")
 PX4_CUSTOM_MAIN_MODE_AUTO = 4
 PX4_CUSTOM_SUB_MODE_AUTO_MISSION = 4
+PX4_READY_TIMEOUT_S = 90
+PX4_ARM_TIMEOUT_S = 12
+PX4_ARM_ATTEMPTS = 3
+
+REQUIRED_PREFLIGHT_SENSORS = (
+    ("gyro", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_GYRO),
+    ("accelerometer", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_ACCEL),
+    ("magnetometer", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_3D_MAG),
+    ("barometer", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_ABSOLUTE_PRESSURE),
+    ("gps", mavutil.mavlink.MAV_SYS_STATUS_SENSOR_GPS),
+)
 
 
 @dataclass
@@ -77,6 +88,12 @@ class SerialBridge:
 @dataclass
 class LogFollower:
     process: subprocess.Popen[bytes]
+    thread: threading.Thread
+
+
+@dataclass
+class GCSHeartbeat:
+    stop_event: threading.Event
     thread: threading.Thread
 
 
@@ -200,6 +217,14 @@ def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, check=False, **kwargs)
 
 
+def locked_send(send_lock: threading.Lock | None, send: Any) -> None:
+    if send_lock is None:
+        send()
+        return
+    with send_lock:
+        send()
+
+
 def append_log(log_path: Path, message: str) -> None:
     with log_path.open("a", encoding="utf-8") as log:
         log.write(message.rstrip() + "\n")
@@ -279,37 +304,89 @@ def connect_mavlink(url: str, log_path: Path, container: str | None = None, dead
     return None
 
 
-def upload_params(master: Any, params: dict[str, float], log_path: Path) -> None:
+def start_gcs_heartbeat(master: Any, log_path: Path, send_lock: threading.Lock) -> GCSHeartbeat:
+    stop_event = threading.Event()
+
+    def pump() -> None:
+        while not stop_event.is_set():
+            try:
+                locked_send(
+                    send_lock,
+                    lambda: master.mav.heartbeat_send(
+                        mavutil.mavlink.MAV_TYPE_GCS,
+                        mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                        0,
+                        0,
+                        mavutil.mavlink.MAV_STATE_ACTIVE,
+                    ),
+                )
+            except Exception as exc:
+                append_log(log_path, f"[runner] GCS heartbeat send failed: {exc}")
+            stop_event.wait(1.0)
+
+    thread = threading.Thread(target=pump, name="gcs-heartbeat", daemon=True)
+    thread.start()
+    append_log(log_path, "[runner] sending MAVLink GCS heartbeats")
+    return GCSHeartbeat(stop_event=stop_event, thread=thread)
+
+
+def stop_gcs_heartbeat(heartbeat: GCSHeartbeat | None) -> None:
+    if heartbeat is None:
+        return
+    heartbeat.stop_event.set()
+    heartbeat.thread.join(timeout=3)
+
+
+def upload_params(
+    master: Any,
+    params: dict[str, float],
+    log_path: Path,
+    send_lock: threading.Lock | None = None,
+) -> None:
     for name, value in params.items():
         encoded_name = name.encode("ascii")
-        master.mav.param_set_send(
-            master.target_system,
-            master.target_component,
-            encoded_name,
-            float(value),
-            mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+        locked_send(
+            send_lock,
+            lambda: master.mav.param_set_send(
+                master.target_system,
+                master.target_component,
+                encoded_name,
+                float(value),
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+            ),
         )
         ack = master.recv_match(type="PARAM_VALUE", blocking=True, timeout=2)
         status = "ack" if ack else "no ack"
         append_log(log_path, f"[runner] param {name}={value:g}: {status}")
 
 
-def upload_mission(master: Any, mission_items: list[Any], log_path: Path) -> bool:
+def upload_mission(
+    master: Any,
+    mission_items: list[Any],
+    log_path: Path,
+    send_lock: threading.Lock | None = None,
+) -> bool:
     if not mission_items:
         append_log(log_path, "[runner] mission has no SimpleItem entries to upload")
         return False
 
-    master.mav.mission_clear_all_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+    locked_send(
+        send_lock,
+        lambda: master.mav.mission_clear_all_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+        ),
     )
     time.sleep(0.5)
-    master.mav.mission_count_send(
-        master.target_system,
-        master.target_component,
-        len(mission_items),
-        mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+    locked_send(
+        send_lock,
+        lambda: master.mav.mission_count_send(
+            master.target_system,
+            master.target_component,
+            len(mission_items),
+            mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+        ),
     )
 
     sent = 0
@@ -328,7 +405,7 @@ def upload_mission(master: Any, mission_items: list[Any], log_path: Path) -> boo
         item = mission_items[seq]
         item.target_system = master.target_system
         item.target_component = master.target_component
-        master.mav.send(item)
+        locked_send(send_lock, lambda item=item: master.mav.send(item))
         sent += 1
         append_log(log_path, f"[runner] mission item {seq} sent")
 
@@ -338,40 +415,158 @@ def upload_mission(master: Any, mission_items: list[Any], log_path: Path) -> boo
     return ok
 
 
-def start_mission(master: Any, log_path: Path) -> None:
-    master.set_mode_px4(
-        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-        PX4_CUSTOM_MAIN_MODE_AUTO,
-        PX4_CUSTOM_SUB_MODE_AUTO_MISSION,
+def missing_sensor_health(sys_status: Any | None) -> list[str]:
+    if sys_status is None:
+        return [name for name, _bit in REQUIRED_PREFLIGHT_SENSORS]
+    health = int(sys_status.onboard_control_sensors_health)
+    return [name for name, bit in REQUIRED_PREFLIGHT_SENSORS if not (health & bit)]
+
+
+def message_is_fresh(message: Any | None, now: float, max_age_s: float = 5.0) -> bool:
+    if message is None:
+        return False
+    return now - float(message._timestamp) <= max_age_s
+
+
+def wait_for_vehicle_ready(master: Any, log_path: Path, timeout_s: int = PX4_READY_TIMEOUT_S) -> bool:
+    """Wait until simulated sensors and global position have settled before arming."""
+    append_log(log_path, f"[runner] waiting up to {timeout_s}s for PX4 sensor and position readiness")
+    deadline = time.monotonic() + timeout_s
+    status: Any | None = None
+    gps: Any | None = None
+    global_position: Any | None = None
+    local_position: Any | None = None
+    attitude: Any | None = None
+    last_report = 0.0
+
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        message = master.recv_match(
+            type=[
+                "SYS_STATUS",
+                "GPS_RAW_INT",
+                "GLOBAL_POSITION_INT",
+                "LOCAL_POSITION_NED",
+                "ATTITUDE",
+            ],
+            blocking=True,
+            timeout=1,
+        )
+        if message is not None:
+            message_type = message.get_type()
+            if message_type == "SYS_STATUS":
+                status = message
+            elif message_type == "GPS_RAW_INT":
+                gps = message
+            elif message_type == "GLOBAL_POSITION_INT":
+                global_position = message
+            elif message_type == "LOCAL_POSITION_NED":
+                local_position = message
+            elif message_type == "ATTITUDE":
+                attitude = message
+
+        missing_sensors = missing_sensor_health(status)
+        gps_ready = message_is_fresh(gps, now) and int(gps.fix_type) >= 3
+        global_ready = (
+            message_is_fresh(global_position, now)
+            and int(global_position.lat) != 0
+            and int(global_position.lon) != 0
+        )
+        local_ready = message_is_fresh(local_position, now)
+        attitude_ready = message_is_fresh(attitude, now)
+
+        if not missing_sensors and gps_ready and global_ready and local_ready and attitude_ready:
+            append_log(log_path, "[runner] PX4 sensor and position readiness confirmed")
+            return True
+
+        if now - last_report >= 5:
+            missing_parts = []
+            if missing_sensors:
+                missing_parts.append("sensor health: " + ", ".join(missing_sensors))
+            if not gps_ready:
+                fix_type = getattr(gps, "fix_type", "none") if gps else "none"
+                missing_parts.append(f"GPS fix >= 3: current={fix_type}")
+            if not global_ready:
+                missing_parts.append("global position")
+            if not local_ready:
+                missing_parts.append("local position")
+            if not attitude_ready:
+                missing_parts.append("attitude")
+            append_log(log_path, "[runner] PX4 not ready yet: " + "; ".join(missing_parts))
+            last_report = now
+
+    append_log(log_path, "[runner] PX4 readiness wait timed out; arming may be denied")
+    return False
+
+
+def wait_for_armed(master: Any, log_path: Path, timeout_s: int = PX4_ARM_TIMEOUT_S) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        heartbeat = master.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+        if heartbeat and int(heartbeat.base_mode) & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED:
+            append_log(log_path, "[runner] PX4 reports vehicle armed")
+            return True
+    append_log(log_path, "[runner] PX4 did not report armed before timeout")
+    return False
+
+
+def start_mission(master: Any, log_path: Path, send_lock: threading.Lock | None = None) -> bool:
+    wait_for_vehicle_ready(master, log_path)
+    locked_send(
+        send_lock,
+        lambda: master.set_mode_px4(
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            PX4_CUSTOM_MAIN_MODE_AUTO,
+            PX4_CUSTOM_SUB_MODE_AUTO_MISSION,
+        ),
     )
     time.sleep(1)
-    master.mav.command_long_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-        0,
-        1,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    )
-    master.mav.command_long_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_CMD_MISSION_START,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+    armed = False
+    for attempt in range(1, PX4_ARM_ATTEMPTS + 1):
+        locked_send(
+            send_lock,
+            lambda: master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+        )
+        append_log(log_path, f"[runner] arm command sent (attempt {attempt}/{PX4_ARM_ATTEMPTS})")
+        if wait_for_armed(master, log_path):
+            armed = True
+            break
+        wait_for_vehicle_ready(master, log_path, timeout_s=15)
+
+    if not armed:
+        append_log(log_path, "[runner] vehicle did not arm; mission start not requested")
+        return False
+
+    locked_send(
+        send_lock,
+        lambda: master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_MISSION_START,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
     )
     append_log(log_path, "[runner] requested AUTO.MISSION mode, arm, and mission start")
+    return True
 
 
 def docker_gui_args() -> list[str]:
@@ -748,6 +943,7 @@ def main() -> int:
     container = ""
     log_follower: LogFollower | None = None
     serial_bridge: SerialBridge | None = None
+    gcs_heartbeat: GCSHeartbeat | None = None
     exit_code = 0
     try:
         if show_simulation:
@@ -761,13 +957,15 @@ def main() -> int:
         if master is None and container and not docker_is_running(container):
             raise RuntimeError("PX4 container exited before MAVLink heartbeat")
         if master is not None:
+            mavlink_send_lock = threading.Lock()
+            gcs_heartbeat = start_gcs_heartbeat(master, log_path, mavlink_send_lock)
             if config.serial_bridge:
                 serial_bridge = start_serial_bridge(config.serial_bridge, log_path)
-            upload_params(master, parse_params(config.px4_params), log_path)
+            upload_params(master, parse_params(config.px4_params), log_path, send_lock=mavlink_send_lock)
             if config.mission_plan is None:
                 append_log(log_path, "[runner] no mission_plan configured; leaving vehicle idle")
-            elif upload_mission(master, qgc_plan_items(config.mission_plan), log_path):
-                start_mission(master, log_path)
+            elif upload_mission(master, qgc_plan_items(config.mission_plan), log_path, send_lock=mavlink_send_lock):
+                start_mission(master, log_path, send_lock=mavlink_send_lock)
 
         stop_reason = wait_for_run_stop(config.timeout_s, log_path)
         metadata["stop_reason"] = stop_reason
@@ -785,6 +983,7 @@ def main() -> int:
         exit_code = 1
     finally:
         metadata["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        stop_gcs_heartbeat(gcs_heartbeat)
         if container:
             if metadata["artifacts"]["px4_ulg"] is None:
                 ulg_path = collect_ulg(container, output_dir, log_path)
