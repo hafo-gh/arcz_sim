@@ -7,12 +7,15 @@ import argparse
 import json
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
 import sys
+import termios
 import threading
 import time
+import tty
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,11 +44,11 @@ class TestConfig:
     world_name: str | None
     world_file: Path | None
     px4_params: Path
-    mission_plan: Path
+    mission_plan: Path | None
     extra_images: list[str]
     output_dir: Path
     px4_image: str = "px4io/px4-sitl-gazebo:latest"
-    timeout_s: int = 90
+    timeout_s: int | None = 90
     mavlink_url: str = "udpin:0.0.0.0:14540"
     ros_domain_id: int = 0
     serial_bridge: "SerialBridgeConfig | None" = None
@@ -120,21 +123,35 @@ def load_manifest(path: Path) -> TestConfig:
         world_name = str(data.get("world_name", data.get("world", "default")))
 
     serial_bridge = load_serial_bridge(data.get("serial_bridge"), manifest_dir)
+    mission_plan = None
+    if data["mission_plan"] is not None:
+        mission_plan = resolve_path(data["mission_plan"], manifest_dir)
 
     return TestConfig(
         vehicle=str(data["vehicle"]),
         world_name=world_name,
         world_file=world_file,
         px4_params=resolve_path(data["px4_params"], manifest_dir),
-        mission_plan=resolve_path(data["mission_plan"], manifest_dir),
+        mission_plan=mission_plan,
         extra_images=list(data.get("extra_images") or []),
         output_dir=resolve_output_path(data["output_dir"], manifest_dir),
         px4_image=str(data.get("px4_image", "px4io/px4-sitl-gazebo:latest")),
-        timeout_s=int(data.get("timeout_s", 90)),
+        timeout_s=parse_timeout(data["timeout_s"]) if "timeout_s" in data else 90,
         mavlink_url=str(data.get("mavlink_url", "udpin:0.0.0.0:14540")),
         ros_domain_id=int(data.get("ros_domain_id", 0)),
         serial_bridge=serial_bridge,
     )
+
+
+def parse_timeout(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("none", "null", "unlimited", "infinite"):
+        return None
+    timeout = int(value)
+    if timeout <= 0:
+        return None
+    return timeout
 
 
 def load_serial_bridge(data: Any, manifest_dir: Path) -> SerialBridgeConfig | None:
@@ -320,7 +337,27 @@ def start_mission(master: Any, log_path: Path) -> None:
     append_log(log_path, "[runner] requested AUTO.MISSION mode, arm, and mission start")
 
 
-def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
+def docker_gui_args() -> list[str]:
+    display = os.environ.get("DISPLAY")
+    if not display:
+        raise RuntimeError("show_simulation requires DISPLAY to be set on the host.")
+
+    args = [
+        "-e",
+        f"DISPLAY={display}",
+        "-e",
+        "QT_X11_NO_MITSHM=1",
+        "-v",
+        "/tmp/.X11-unix:/tmp/.X11-unix:rw",
+    ]
+
+    if Path("/dev/dri").exists():
+        args.extend(["--device", "/dev/dri"])
+
+    return args
+
+
+def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simulation: bool) -> str:
     container = f"arcz-sim-{uuid.uuid4().hex[:12]}"
     world_name = config.world_name or "default"
     world_mount: list[str] = []
@@ -333,6 +370,7 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
             f"{config.world_file}:/scenario/worlds/{world_name}.sdf:ro",
         ]
 
+    display_args = docker_gui_args() if show_simulation else ["-e", "HEADLESS=1"]
     cmd = [
         "docker",
         "run",
@@ -341,8 +379,7 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path) -> str:
         container,
         "--network",
         "host",
-        "-e",
-        "HEADLESS=1",
+        *display_args,
         "-e",
         f"PX4_SIM_MODEL={config.vehicle}",
         "-e",
@@ -488,7 +525,6 @@ def clean_log_file(log_path: Path) -> None:
     text = text.replace("p[runner]", "[runner]")
     text = text.replace("[r[runner]", "[runner]")
     text = text.replace(" runner]", "[runner]")
-    text = text.replace("unner]", "[runner]")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     log_path.write_text(text, encoding="utf-8")
@@ -539,13 +575,59 @@ def write_metadata(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def wait_for_run_stop(timeout_s: int | None, log_path: Path) -> str:
+    if timeout_s is None:
+        message = "Scenario is running without a timeout. Press q to stop and collect artifacts."
+        deadline = None
+    else:
+        message = f"Scenario is running for {timeout_s}s. Press q to stop early and collect artifacts."
+        deadline = time.monotonic() + timeout_s
+    print(message, flush=True)
+    append_log(log_path, f"[runner] {message}")
+
+    if not sys.stdin.isatty():
+        if timeout_s is None:
+            while True:
+                time.sleep(1)
+        time.sleep(timeout_s)
+        return "timeout"
+
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while True:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if remaining == 0.0:
+                return "timeout"
+            wait_s = 0.25 if remaining is None else min(0.25, remaining)
+            readable, _, _ = select.select([sys.stdin], [], [], wait_s)
+            if not readable:
+                continue
+            key = sys.stdin.read(1)
+            if key.lower() == "q":
+                append_log(log_path, "[runner] stop requested by q key")
+                return "user"
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
+    parser.add_argument(
+        "run_mode",
+        nargs="?",
+        choices=("show_simulation",),
+        help="Use show_simulation to start Gazebo with its GUI instead of headless mode.",
+    )
     args = parser.parse_args()
 
     config = load_manifest(args.manifest.resolve())
-    for needed in (config.px4_params, config.mission_plan):
+    show_simulation = args.run_mode == "show_simulation"
+    needed_inputs = [config.px4_params]
+    if config.mission_plan:
+        needed_inputs.append(config.mission_plan)
+    for needed in needed_inputs:
         if not needed.exists():
             raise SystemExit(f"Input file does not exist: {needed}")
     if config.world_file and not config.world_file.exists():
@@ -565,13 +647,14 @@ def main() -> int:
             "world_name": config.world_name,
             "world_file": str(config.world_file) if config.world_file else None,
             "px4_params": str(config.px4_params),
-            "mission_plan": str(config.mission_plan),
+            "mission_plan": str(config.mission_plan) if config.mission_plan else None,
             "extra_images": config.extra_images,
             "output_dir": str(config.output_dir),
             "px4_image": config.px4_image,
             "timeout_s": config.timeout_s,
             "mavlink_url": config.mavlink_url,
             "ros_domain_id": config.ros_domain_id,
+            "show_simulation": show_simulation,
             "serial_bridge": {
                 "device": str(config.serial_bridge.device),
                 "baudrate": config.serial_bridge.baudrate,
@@ -587,14 +670,19 @@ def main() -> int:
     write_metadata(output_dir / "metadata.json", metadata)
 
     shutil.copy2(config.px4_params, output_dir / "input.params")
-    shutil.copy2(config.mission_plan, output_dir / "input.plan")
+    if config.mission_plan:
+        shutil.copy2(config.mission_plan, output_dir / "input.plan")
+    elif (output_dir / "input.plan").exists():
+        (output_dir / "input.plan").unlink()
 
     container = ""
     log_follower: LogFollower | None = None
     serial_bridge: SerialBridge | None = None
     exit_code = 0
     try:
-        container = docker_start(config, output_dir, log_path)
+        if show_simulation:
+            append_log(log_path, "[runner] starting Gazebo with GUI because show_simulation was requested")
+        container = docker_start(config, output_dir, log_path, show_simulation)
         metadata["container"] = container
         write_metadata(output_dir / "metadata.json", metadata)
         log_follower = docker_logs(container, log_path)
@@ -604,11 +692,13 @@ def main() -> int:
             if config.serial_bridge:
                 serial_bridge = start_serial_bridge(config.serial_bridge, log_path)
             upload_params(master, parse_params(config.px4_params), log_path)
-            if upload_mission(master, qgc_plan_items(config.mission_plan), log_path):
+            if config.mission_plan is None:
+                append_log(log_path, "[runner] no mission_plan configured; leaving vehicle idle")
+            elif upload_mission(master, qgc_plan_items(config.mission_plan), log_path):
                 start_mission(master, log_path)
 
-        append_log(log_path, f"[runner] letting scenario run for {config.timeout_s}s")
-        time.sleep(config.timeout_s)
+        stop_reason = wait_for_run_stop(config.timeout_s, log_path)
+        metadata["stop_reason"] = stop_reason
         ulg_path = collect_ulg(container, output_dir, log_path)
         metadata["artifacts"]["px4_ulg"] = "px4.ulg" if ulg_path else None
         metadata["container_ulg_path"] = ulg_path

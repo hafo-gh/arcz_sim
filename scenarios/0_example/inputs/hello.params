@@ -3,4 +3,10 @@
 MIS_TAKEOFF_ALT 5
 MPC_XY_CRUISE 3
 MPC_Z_VEL_MAX_UP 2
-COM_ARM_WO_GPS 1
+
+# SITL-only arming convenience. Do not copy these into a real aircraft profile.
+COM_ARM_WO_GPS 2
+COM_RC_IN_MODE 1
+COM_ARM_IMU_ACC 1.0
+COM_ARM_IMU_GYR 0.3
+EKF2_ABL_LIM 0.8

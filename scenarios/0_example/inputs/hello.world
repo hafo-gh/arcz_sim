@@ -1,9 +1,9 @@
 <sdf version="1.9">
   <world name="hello">
     <physics type="ode">
-      <max_step_size>0.004</max_step_size>
-      <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>250</real_time_update_rate>
+      <max_step_size>0.004</max_step_size>      
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>125</real_time_update_rate>
     </physics>
 
     <gravity>0 0 -9.8</gravity>
@@ -27,6 +27,13 @@
               <size>1 1</size>
             </plane>
           </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -41,8 +48,23 @@
             <specular>0.8 0.8 0.8 1</specular>
           </material>
         </visual>
+        <pose>0 0 0 0 0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
         <enable_wind>true</enable_wind>
       </link>
+      <pose>0 0 0 0 0 0</pose>
+      <self_collide>false</self_collide>
     </model>
 
     <light name="sunUTC" type="directional">
@@ -58,6 +80,11 @@
         <constant>1</constant>
         <quadratic>0</quadratic>
       </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
     </light>
 
     <wind>
