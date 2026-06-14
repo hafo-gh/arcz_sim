@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import select
@@ -276,28 +277,36 @@ def qgc_plan_items(path: Path) -> list[Any]:
         if item.get("type") != "SimpleItem":
             continue
         raw_params = item.get("params", [])
-        params = [(0 if value is None else value) for value in raw_params]
+        params = list(raw_params)
         while len(params) < 7:
             params.append(0)
-        mission_items.append(
-            mavutil.mavlink.MAVLink_mission_item_int_message(
-                target_system=0,
-                target_component=0,
-                seq=seq,
-                frame=int(item["frame"]),
-                command=int(item["command"]),
-                current=1 if seq == 0 else 0,
-                autocontinue=1 if item.get("autoContinue", True) else 0,
-                param1=float(params[0]),
-                param2=float(params[1]),
-                param3=float(params[2]),
-                param4=float(params[3]),
-                x=int(float(params[4]) * 1e7),
-                y=int(float(params[5]) * 1e7),
-                z=float(params[6]),
-                mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
-            )
+        float_params = [(math.nan if value is None else value) for value in params[:4]]
+        int_position_params = [(0 if value is None else value) for value in params[4:7]]
+        mission_item_kwargs = dict(
+            target_system=0,
+            target_component=0,
+            seq=seq,
+            frame=int(item["frame"]),
+            command=int(item["command"]),
+            current=1 if seq == 0 else 0,
+            autocontinue=1 if item.get("autoContinue", True) else 0,
+            param1=float(float_params[0]),
+            param2=float(float_params[1]),
+            param3=float(float_params[2]),
+            param4=float(float_params[3]),
+            x=int(float(int_position_params[0]) * 1e7),
+            y=int(float(int_position_params[1]) * 1e7),
+            z=float(int_position_params[2]),
+            mission_type=mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
         )
+        try:
+            mission_item = mavutil.mavlink.MAVLink_mission_item_int_message(**mission_item_kwargs)
+        except TypeError as exc:
+            if "mission_type" not in str(exc):
+                raise
+            mission_item_kwargs.pop("mission_type")
+            mission_item = mavutil.mavlink.MAVLink_mission_item_int_message(**mission_item_kwargs)
+        mission_items.append(mission_item)
     return mission_items
 
 
