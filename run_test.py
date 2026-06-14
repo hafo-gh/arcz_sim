@@ -621,6 +621,7 @@ def docker_gpu_args(mode: str, log_path: Path) -> list[str]:
 
 def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simulation: bool) -> str:
     container = f"arcz-sim-{uuid.uuid4().hex[:12]}"
+    gz_partition = container
     world_name = config.world_name or "default"
     world_mount: list[str] = []
     if config.world_file:
@@ -650,6 +651,10 @@ def docker_start(config: TestConfig, output_dir: Path, log_path: Path, show_simu
         f"PX4_GZ_WORLD={world_name}",
         "-e",
         f"ROS_DOMAIN_ID={config.ros_domain_id}",
+        "-e",
+        "GZ_IP=127.0.0.1",
+        "-e",
+        f"GZ_PARTITION={gz_partition}",
         *world_mount,
         "-v",
         f"{output_dir}:/test_output",
