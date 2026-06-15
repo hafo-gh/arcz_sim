@@ -16,8 +16,8 @@
         "items": [
             {
                 "AMSLAltAboveTerrain": 5,
-                "Altitude": 5,
-                "AltitudeMode": 3,
+                "Altitude": 230,
+                "AltitudeMode": 2,
                 "autoContinue": true,
                 "command": 22,
                 "doJumpId": 1,
@@ -29,7 +29,7 @@
                     null,
                     50.36085079707555,
                     14.903732003418469,
-                    221
+                    230
                 ],
                 "type": "SimpleItem"
             },
@@ -175,8 +175,8 @@
             },
             {
                 "AMSLAltAboveTerrain": 5,
-                "Altitude": 5,
-                "AltitudeMode": 3,
+                "Altitude": 240,
+                "AltitudeMode": 2,
                 "autoContinue": true,
                 "command": 16,
                 "doJumpId": 10,
@@ -188,7 +188,7 @@
                     null,
                     50.360848071475,
                     14.90416710368737,
-                    221
+                    240
                 ],
                 "type": "SimpleItem"
             },

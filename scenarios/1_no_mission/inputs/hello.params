@@ -1,8 +1,8 @@
 # Minimal hello-world-like PX4 parameter overlay.
 # Format: PARAM_NAME VALUE
 MIS_TAKEOFF_ALT 5
-MPC_XY_CRUISE 3
-MPC_Z_VEL_MAX_UP 2
+MPC_XY_CRUISE 15
+MPC_Z_VEL_MAX_UP 5
 
 # SITL-only arming convenience. Do not copy these into a real aircraft profile.
 COM_ARM_WO_GPS 2
