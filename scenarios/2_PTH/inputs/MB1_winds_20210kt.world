@@ -2,7 +2,7 @@
   <world name="hello">
     <physics type="ode">
       <!-- Keep 250 Hz physics steps to match the x500 IMU sensor update rate. -->
-      <max_step_size>0.004</max_step_size>
+      <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
       <real_time_update_rate>250</real_time_update_rate>
     </physics>
@@ -89,7 +89,7 @@
     </light>
 
     <wind>
-      <linear_velocity>5 2 0</linear_velocity>
+      <linear_velocity>10 0 0</linear_velocity>
     </wind>
 
     <spherical_coordinates>

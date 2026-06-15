@@ -1,7 +1,7 @@
 vehicle: gz_x500
 world_file: inputs/MB1_winds_20210kt.world
 px4_params: inputs/base.params
-mission_plan: inputs/MB1_extended_pattern.plan
+mission_plan: inputs/MB1_long_way_south.plan
 extra_images: []
 output_dir: recent_output
 px4_image: px4io/px4-sitl-gazebo:latest
