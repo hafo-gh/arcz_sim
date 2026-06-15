@@ -1,7 +1,7 @@
 vehicle: gz_x500
 # Use a built-in PX4/Gazebo world by name instead of world_file:
 # world_name: default
-world_file: inputs/hello.world
+world_file: inputs/kherson.world
 px4_params: inputs/hello.params
 mission_plan: null
 extra_images: []
