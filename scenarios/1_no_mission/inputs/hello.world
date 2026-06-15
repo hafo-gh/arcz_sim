@@ -1,10 +1,10 @@
 <sdf version="1.9">
   <world name="hello">
     <physics type="ode">
-      <max_step_size>0.004</max_step_size>
+      <max_step_size>0.001</max_step_size>
       <!-- Low-resource default: run simulation at about half real time. -->
-      <real_time_factor>0.5</real_time_factor>
-      <real_time_update_rate>125</real_time_update_rate>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
     </physics>
 
     <gravity>0 0 -9.8</gravity>
